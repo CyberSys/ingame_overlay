@@ -170,6 +170,7 @@ OpenGLHook_t::~OpenGLHook_t()
 
     _ResetRenderState(OverlayHookState::Removing);
 
+    _Instance->UnhookAll();
     _Instance = nullptr;
 }
 

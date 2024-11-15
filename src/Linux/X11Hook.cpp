@@ -501,6 +501,7 @@ X11Hook_t::~X11Hook_t()
 
     ResetRenderState(OverlayHookState::Removing);
 
+    _inst->UnhookAll();
     _inst = nullptr;
 }
 

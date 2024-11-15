@@ -293,6 +293,7 @@ DX10Hook_t::~DX10Hook_t()
 
     _ResetRenderState(OverlayHookState::Removing);
 
+    _Instance->UnhookAll();
     _Instance = nullptr;
 }
 
