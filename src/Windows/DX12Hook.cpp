@@ -27,6 +27,10 @@ namespace InGameOverlay {
 
 #define TRY_HOOK_FUNCTION(NAME) do { if (!HookFunc(std::make_pair<void**, void*>(&(void*&)_##NAME, (void*)&DX12Hook_t::_My##NAME))) { \
     INGAMEOVERLAY_ERROR("Failed to hook {}", #NAME);\
+} } while(0)
+
+#define TRY_HOOK_FUNCTION_OR_FAIL(NAME) do { if (!HookFunc(std::make_pair<void**, void*>(&(void*&)_##NAME, (void*)&DX12Hook_t::_My##NAME))) { \
+    INGAMEOVERLAY_ERROR("Failed to hook {}", #NAME);\
     UnhookAll();\
     return false;\
 } } while(0)
@@ -58,7 +62,7 @@ static inline uint32_t GetHeapUsedIndex(uint32_t heapId)
     return heapId & 0xffff;
 }
 
-bool DX12Hook_t::StartHook(std::function<void()> key_combination_callback, std::set<ToggleKey> toggle_keys, /*ImFontAtlas* */ void* imgui_font_atlas)
+bool DX12Hook_t::StartHook(std::function<void()> keyCombinationCallback, ToggleKey toggleKeys[], int toggleKeysCount, /*ImFontAtlas* */ void* imguiFontAtlas)
 {
     if (!_Hooked)
     {
@@ -68,29 +72,29 @@ bool DX12Hook_t::StartHook(std::function<void()> key_combination_callback, std::
             return false;
         }
 
-        if (!WindowsHook_t::Inst()->StartHook(key_combination_callback, toggle_keys))
+        if (!WindowsHook_t::Inst()->StartHook(keyCombinationCallback, toggleKeys, toggleKeysCount))
             return false;
 
         _WindowsHooked = true;
 
         BeginHook();
         TRY_HOOK_FUNCTION(ID3D12DeviceRelease);
-        TRY_HOOK_FUNCTION(IDXGISwapChainPresent);
-        TRY_HOOK_FUNCTION(IDXGISwapChainResizeTarget);
-        TRY_HOOK_FUNCTION(IDXGISwapChainResizeBuffers);
-        TRY_HOOK_FUNCTION(ID3D12CommandQueueExecuteCommandLists);
+        TRY_HOOK_FUNCTION_OR_FAIL(IDXGISwapChainPresent);
+        TRY_HOOK_FUNCTION_OR_FAIL(IDXGISwapChainResizeTarget);
+        TRY_HOOK_FUNCTION_OR_FAIL(IDXGISwapChainResizeBuffers);
+        TRY_HOOK_FUNCTION_OR_FAIL(ID3D12CommandQueueExecuteCommandLists);
 
         if (_IDXGISwapChain1Present1 != nullptr)
-            TRY_HOOK_FUNCTION(IDXGISwapChain1Present1);
+            TRY_HOOK_FUNCTION_OR_FAIL(IDXGISwapChain1Present1);
 
         if (_IDXGISwapChain3ResizeBuffers1 != nullptr)
-            TRY_HOOK_FUNCTION(IDXGISwapChain3ResizeBuffers1);
+            TRY_HOOK_FUNCTION_OR_FAIL(IDXGISwapChain3ResizeBuffers1);
 
         EndHook();
 
         INGAMEOVERLAY_INFO("Hooked DirectX 12");
         _Hooked = true;
-        _ImGuiFontAtlas = imgui_font_atlas;
+        _ImGuiFontAtlas = imguiFontAtlas;
     }
     return true;
 }
@@ -171,13 +175,18 @@ void DX12Hook_t::_ReleaseShaderRessourceView(uint32_t id)
 
 ID3D12CommandQueue* DX12Hook_t::_FindCommandQueueFromSwapChain(IDXGISwapChain* pSwapChain)
 {
+    constexpr int MaxRetries = 10;
     ID3D12CommandQueue* pCommandQueue = nullptr;
+    ID3D12CommandQueue* pHookedCommandQueue = _CommandQueue;
 
-    if (_CommandQueueOffset == 0 && _CommandQueue != nullptr)
+    if (pHookedCommandQueue == nullptr)
+        return nullptr;
+
+    if (_CommandQueueOffset == 0)
     {
         for (size_t i = 0; i < 1024; ++i)
         {
-            if (*reinterpret_cast<ID3D12CommandQueue**>(reinterpret_cast<uintptr_t>(pSwapChain) + i) == _CommandQueue)
+            if (*reinterpret_cast<ID3D12CommandQueue**>(reinterpret_cast<uintptr_t>(pSwapChain) + i) == pHookedCommandQueue)
             {
                 INGAMEOVERLAY_INFO("Found IDXGISwapChain::ppCommandQueue at offset {}.", i);
                 _CommandQueueOffset = i;
@@ -187,18 +196,33 @@ ID3D12CommandQueue* DX12Hook_t::_FindCommandQueueFromSwapChain(IDXGISwapChain* p
     }
 
     if (_CommandQueueOffset != 0)
+    {
         pCommandQueue = *reinterpret_cast<ID3D12CommandQueue**>(reinterpret_cast<uintptr_t>(pSwapChain) + _CommandQueueOffset);
+    }
+    else if (_CommandQueueOffsetRetries <= MaxRetries)
+    {
+        if (++_CommandQueueOffsetRetries >= MaxRetries)
+        {
+            INGAMEOVERLAY_INFO("Failed to find IDXGISwapChain::ppCommandQueue, fallback to ID3D12CommandQueue::ExecuteCommandLists");
+        }
+    }
+    else
+    {
+        pCommandQueue = pHookedCommandQueue;
+    }
 
     return pCommandQueue;
 }
 
 void DX12Hook_t::_UpdateHookDeviceRefCount()
 {
+    constexpr int BaseRefCount = 2;
+
     switch (_HookState)
     {
         // 2 Base reference count value
         // 0 ref from ImGui
-        case OverlayHookState::Removing: _HookDeviceRefCount = 3; break;
+        case OverlayHookState::Removing: _HookDeviceRefCount = BaseRefCount + 1; break;
         // 0 ref from ImGui
         //case OverlayHookState::Reset: _HookDeviceRefCount = 15 + _ImageResources.size(); break;
         // Us: 2 + FrameCount * 5 + ImagesResourcesCount
@@ -211,7 +235,7 @@ void DX12Hook_t::_UpdateHookDeviceRefCount()
         // PipelineState
         // FontTexture
         // (VertexBuffer + IndexBuffer) * FrameCount
-        case OverlayHookState::Ready: _HookDeviceRefCount = 2 + (_OverlayFrames.size() * 9) + _ShaderResourceViewHeapDescriptors.size() + _ImageResources.size();
+        case OverlayHookState::Ready: _HookDeviceRefCount = BaseRefCount + (_OverlayFrames.size() * 9) + _ShaderResourceViewHeapDescriptors.size() + _ImageResources.size();
     }
 }
 
@@ -295,6 +319,9 @@ void DX12Hook_t::_ResetRenderState(OverlayHookState state)
     if (_HookState == state)
         return;
     
+    if (state == OverlayHookState::Removing)
+        ++_DeviceReleasing;
+
     OverlayHookReady(state);
     
     _HookState = state;
@@ -302,7 +329,6 @@ void DX12Hook_t::_ResetRenderState(OverlayHookState state)
     switch (state)
     {
         case OverlayHookState::Removing:
-            _DeviceReleasing = true;
             ImGui_ImplDX12_Shutdown();
             WindowsHook_t::Inst()->ResetRenderState(state);
             ImGui::DestroyContext();
@@ -314,10 +340,13 @@ void DX12Hook_t::_ResetRenderState(OverlayHookState state)
             _ShaderResourceViewHeapDescriptors.clear();
             SafeRelease(_Device);
             _CommandQueueOffset = 0;
+            _CommandQueueOffsetRetries = 0;
             _CommandQueue = nullptr;
 
-            _DeviceReleasing = false;
     }
+    
+    if (state == OverlayHookState::Removing)
+        --_DeviceReleasing;
 }
 
 // Try to make this function and overlay's proc as short as possible or it might affect game's fps.
@@ -395,6 +424,8 @@ void DX12Hook_t::_PrepareForOverlay(IDXGISwapChain* pSwapChain, ID3D12CommandQue
 
         OverlayProc();
 
+        _LoadResources();
+
         D3D12_RESOURCE_BARRIER barrier = {};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -429,7 +460,7 @@ ULONG STDMETHODCALLTYPE DX12Hook_t::_MyID3D12DeviceRelease(IUnknown* _this)
 
     INGAMEOVERLAY_INFO("ID3D12Device::Release: RefCount = {}, Our removal threshold = {}", result, inst->_HookDeviceRefCount);
 
-    if (!inst->_DeviceReleasing && _this == inst->_Device && result < inst->_HookDeviceRefCount)
+    if (inst->_DeviceReleasing == 0 && _this == inst->_Device && result < inst->_HookDeviceRefCount)
         inst->_ResetRenderState(OverlayHookState::Removing);
 
     return result;
@@ -511,7 +542,8 @@ void STDMETHODCALLTYPE DX12Hook_t::_MyID3D12CommandQueueExecuteCommandLists(ID3D
 DX12Hook_t::DX12Hook_t():
     _Hooked(false),
     _WindowsHooked(false),
-    _DeviceReleasing(false),
+    _DeviceReleasing(0),
+    _CommandQueueOffsetRetries(0),
     _CommandQueueOffset(0),
     _CommandQueue(nullptr),
     _Device(nullptr),
@@ -550,9 +582,9 @@ DX12Hook_t* DX12Hook_t::Inst()
     return _Instance;
 }
 
-const std::string& DX12Hook_t::GetLibraryName() const
+const char* DX12Hook_t::GetLibraryName() const
 {
-    return LibraryName;
+    return LibraryName.c_str();
 }
 
 RendererHookType_t DX12Hook_t::GetRendererHookType() const

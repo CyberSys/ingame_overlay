@@ -19,9 +19,7 @@
 
 #pragma once
 
-#include <InGameOverlay/RendererHook.h>
-
-#include "../InternalIncludes.h"
+#include "../RendererHookInternal.h"
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -29,7 +27,7 @@
 namespace InGameOverlay {
 
 class DX11Hook_t : 
-    public RendererHook_t,
+    public InGameOverlay::RendererHookInternal_t,
     public BaseHook_t
 {
 private:
@@ -38,7 +36,8 @@ private:
     // Variables
     bool _Hooked;
     bool _WindowsHooked;
-    bool _DeviceReleasing;
+    bool _UsesDXVK;
+    uint32_t _DeviceReleasing;
     ID3D11Device* _Device;
     ULONG _HookDeviceRefCount;
     OverlayHookState _HookState;
@@ -74,14 +73,15 @@ public:
 
     virtual ~DX11Hook_t();
 
-    virtual bool StartHook(std::function<void()> key_combination_callback, std::set<InGameOverlay::ToggleKey> toggle_keys, /*ImFontAtlas* */ void* imgui_font_atlas = nullptr);
+    virtual bool StartHook(std::function<void()> keyCombinationCallback, ToggleKey toggleKeys[], int toggleKeysCount, /*ImFontAtlas* */ void* imguiFontAtlas = nullptr);
     virtual void HideAppInputs(bool hide);
     virtual void HideOverlayInputs(bool hide);
     virtual bool IsStarted();
     static DX11Hook_t* Inst();
-    virtual const std::string& GetLibraryName() const;
+    virtual const char* GetLibraryName() const;
     virtual RendererHookType_t GetRendererHookType() const;
 
+    void SetDXVK();
     void LoadFunctions(
         decltype(_ID3D11DeviceRelease) releaseFcn,
         decltype(_IDXGISwapChainPresent) presentFcn,
